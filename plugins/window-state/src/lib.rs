@@ -80,7 +80,8 @@ impl Default for WindowState {
     }
 }
 
-struct WindowStateCache(Arc<Mutex<HashMap<String, WindowState>>>);
+struct WindowStateCache(Arc<Mutex<HashMap<String, HashMap<String, WindowState>>>>);
+struct GroupStateCache(Arc<Mutex<Vec<Box<Group>>>>);
 pub trait AppHandleExt {
     /// Saves all open windows state to disk
     fn save_window_state(&self, flags: StateFlags) -> Result<()>;
@@ -92,7 +93,7 @@ impl<R: Runtime> AppHandleExt for tauri::AppHandle<R> {
             let state_path = app_dir.join(STATE_FILENAME);
             let cache = self.state::<WindowStateCache>();
             let mut state = cache.0.lock().unwrap();
-            for (label, s) in state.iter_mut() {
+            for (label, s) in state.iter_mut().into_iter() {
                 if let Some(window) = self.get_window(label) {
                     window.update_state(s, flags)?;
                 }
@@ -120,6 +121,9 @@ impl<R: Runtime> WindowExt for Window<R> {
     fn restore_state(&self, flags: StateFlags) -> tauri::Result<()> {
         let cache = self.state::<WindowStateCache>();
         let mut c = cache.0.lock().unwrap();
+        // let group = self.state::<GroupStateCache>();
+        // let key = group_filter(group.0.lock().unwrap(), label);
+        // c.i;
 
         let mut should_show = true;
 
@@ -265,11 +269,33 @@ impl<R: Runtime> WindowExtInternal for Window<R> {
     }
 }
 
+pub struct Group {
+    name: String,
+    match_rule: dyn FnOnce(String) -> bool,
+}
+
+impl Group {
+    pub const fn filter<P>(self, label: String) -> bool {
+        self.match_rule(label)
+    }
+}
+
+/// get group name which match first rule
+pub fn group_filter(groups: Vec<Box<Group>>, label: String) -> String {
+    groups
+        .iter()
+        .map(Box::as_ref)
+        .filter(|g| g.filter(label))
+        .nth(0)
+        .map_or(label, |g| g.name)
+}
+
 #[derive(Default)]
 pub struct Builder {
     denylist: HashSet<String>,
     skip_initial_state: HashSet<String>,
     state_flags: StateFlags,
+    groups: Vec<Box<Group>>,
 }
 
 impl Builder {
@@ -289,6 +315,12 @@ impl Builder {
     /// Adds the given window label to a list of windows to skip initial state restore.
     pub fn skip_initial_state(mut self, label: &str) -> Self {
         self.skip_initial_state.insert(label.into());
+        self
+    }
+
+    /// Adds the given window label to a list of windows to skip initial state restore.
+    pub fn with_group(mut self, group: Box<Group>) -> Self {
+        self.groups.push(group);
         self
     }
 
@@ -318,6 +350,7 @@ impl Builder {
                     Default::default()
                 };
                 app.manage(WindowStateCache(cache));
+                app.manage(GroupStateCache(Arc::new(Mutex::new(self.groups))));
                 Ok(())
             })
             .on_webview_ready(move |window| {
@@ -335,20 +368,24 @@ impl Builder {
                 let window_clone = window.clone();
                 let flags = self.state_flags;
 
+                let groups = window.state::<GroupStateCache>();
+                let groups = group.0.clone().lock().unwrap();
+                let key = group_filter(groups, label);
+
                 // insert a default state if this window should be tracked and
                 // the disk cache doesn't have a state for it
                 {
                     cache
                         .lock()
                         .unwrap()
-                        .entry(label.clone())
+                        .entry(key)
                         .or_insert_with(WindowState::default);
                 }
 
                 window.on_window_event(move |e| {
                     if let WindowEvent::CloseRequested { .. } = e {
                         let mut c = cache.lock().unwrap();
-                        if let Some(state) = c.get_mut(&label) {
+                        if let Some(state) = c.get_mut(&key) {
                             let _ = window_clone.update_state(state, flags);
                         }
                     }
