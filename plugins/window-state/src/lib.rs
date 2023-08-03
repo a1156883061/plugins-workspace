@@ -81,8 +81,11 @@ impl Default for WindowState {
 }
 
 type WindowStateMap = HashMap<String, HashMap<String, WindowState>>;
+
 struct WindowStateCache(Arc<Mutex<WindowStateMap>>);
+
 struct GroupStateCache(Arc<Mutex<Vec<Group>>>);
+
 pub trait AppHandleExt {
     /// Saves all open windows state to disk
     fn save_window_state(&self, flags: StateFlags) -> Result<()>;
@@ -286,6 +289,10 @@ pub struct Group {
 }
 
 impl Group {
+    pub fn new(name: String, match_rule: fn(&String) -> bool) -> Group {
+        Group { name, match_rule }
+    }
+
     pub fn filter(&self, label: &String) -> bool {
         (self.match_rule)(label)
     }
